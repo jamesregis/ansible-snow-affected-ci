@@ -1,0 +1,60 @@
+---
+- hosts: localhost
+  gather_facts: no
+
+  vars:
+    change_id: CHG0040003
+    org: Default
+    check_ssl: no
+    uri: "https://{{ sn_instance }}.service-now.com/api/now/table"
+
+  pre_tasks:
+   - setup:
+      gather_subset:
+       - '!all'
+
+  tasks:
+    - name: Get ServiceNow Change information
+      ansible.builtin.uri:
+        url: "{{ uri }}/change_request?sysparm_query=number={{ change_id }}"
+        user: "{{ sn_username }}"
+        password: "{{ sn_password }}"
+      register: change_info
+
+    - name: Collect Change sys_id information
+      ansible.builtin.set_fact:
+        snow_change_sys_id: "{{ change_info.json.result.0.sys_id }}"
+
+    - name: Get ServiceNow Task CI items
+      ansible.builtin.uri:
+        url: "{{ uri }}/task_ci?sysparm_query=task={{ snow_change_sys_id }}"
+        user: "{{ sn_username }}"
+        password: "{{ sn_password }}"
+      register: task_info
+
+    - name: Check if Change has affected CIs
+      ansible.builtin.set_fact:
+        has_affected_cis: "{{ 'no' if task_info.json.result | length < 1 else 'yes' }}"
+
+    - name: Get ServiceNow CI information
+      ansible.builtin.uri:
+        url: "{{ uri }}/cmdb_ci/{{ item.ci_item.value }}?sysparm_display_value=true"
+        user: "{{ sn_username }}"
+        password: "{{ sn_password }}"
+      register: ci_info
+      with_items:
+        - "{{ task_info.json.result }}"
+      when: has_affected_cis | bool
+
+    - name: Collect affected CI
+      ansible.builtin.set_fact:
+        snow_affected_cis: "{{ snow_affected_cis | default({}) | combine ({item.json.result.asset_tag: item.json.result.name}) }}"
+      with_items:
+        - "{{ ci_info.results }}"
+      when: has_affected_cis | bool
+
+    - name: Get number of CI in the change {{ change_id }}
+      set_fact:
+        number_of_ci_affected: "{{ snow_affected_cis|length }}"
+
+    - debug: var=number_of_ci_affected
